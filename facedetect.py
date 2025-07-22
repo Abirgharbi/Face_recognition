@@ -1,137 +1,105 @@
 import cv2
 import numpy as np
-import csv
-import sys
-from datetime import datetime
 import face_recognition
 from flask import Flask, request, jsonify
+from datetime import datetime
+import csv
+import os
 
 app = Flask(__name__)
 
-# Charger les visages connus
-def load_image_rgb(path):
-    img_bgr = cv2.imread(path)
-    print(f"DEBUG - Chargement de l'image '{path}':", "Succès" if img_bgr is not None else "Échec")
-    if img_bgr is None:
-        raise ValueError(f"Impossible de charger l'image : {path}")
-    img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
-    return img_rgb
+KNOWN_FACES_DIR = "photos"
+TOLERANCE = 0.55
+MODEL = "hog"   
+FRAME_RESIZE_SCALE = 0.25  
 
-def get_face_encoding(image, image_name):
-    encodings = face_recognition.face_encodings(image)
-    if len(encodings) == 0:
-        raise ValueError(f"Aucun visage détecté dans {image_name}")
-    return encodings[0]
+known_face_encodings = []
+known_face_names = []
 
-# Connaitre les visages connus
-known_face_encodings = [
-    get_face_encoding(load_image_rgb("photos/abir.jpg"), "abir.jpg"),
-    get_face_encoding(load_image_rgb("photos/ala.jpg"), "ala.jpg"),
-    get_face_encoding(load_image_rgb("photos/kmar.jpg"), "kmar.jpg"),
-    get_face_encoding(load_image_rgb("photos/Obama.jpg"), "Obama.jpg")
-]
-known_face_names = ["abir", "ala", "kmar", "Obama"]
+#  Charger les visages connus
+def load_known_faces():
+    print(" Chargement des visages connus...")
+    for person_name in os.listdir(KNOWN_FACES_DIR):
+        person_dir = os.path.join(KNOWN_FACES_DIR, person_name)
+        if not os.path.isdir(person_dir):
+            continue
+        for filename in os.listdir(person_dir):
+            path = os.path.join(person_dir, filename)
+            image = cv2.imread(path)
+            if image is None:
+                print(f" Image invalide ignorée : {path}")
+                continue
+            rgb_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+            encodings = face_recognition.face_encodings(rgb_image)
+            if encodings:
+                known_face_encodings.append(encodings[0])
+                known_face_names.append(person_name)
+                print(f" Encodé {filename} pour {person_name}")
+            else:
+                print(f" Aucun visage détecté dans {filename}")
 
-# === Mode Temps Réel ===
-def run_realtime():
-    students = known_face_names.copy()
-    face_locations = []
-    face_encodings = []
-    face_names = []
-    process_this_frame = True
-
+#  Journaliser la détection
+def log_detection(name):
     now = datetime.now()
-    current_date = now.strftime("%Y-%m-%d")
+    date_str = now.strftime("%Y-%m-%d")
+    time_str = now.strftime("%H:%M:%S")
+    filename = f"{date_str}.csv"
+    file_exists = os.path.isfile(filename)
+    with open(filename, mode='a', newline='', encoding='utf-8') as csvfile:
+        writer = csv.writer(csvfile, delimiter=';')
+        if not file_exists:
+            writer.writerow(["Nom", "Date", "Heure"])
+        writer.writerow([name, date_str, time_str])
+    print(f" Enregistré dans {filename} : {name};{date_str};{time_str}")
 
-    f = open(current_date + '.csv', 'w+', newline='', encoding='utf-8')
-    lnwriter = csv.writer(f, delimiter=';')
+#  Apprentissage progressif
+def save_new_face(frame, name):
+    save_dir = os.path.join(KNOWN_FACES_DIR, name)
+    os.makedirs(save_dir, exist_ok=True)
+    count = len(os.listdir(save_dir)) + 1
+    filename = os.path.join(save_dir, f"{count}.jpg")
+    cv2.imwrite(filename, frame)
+    print(f"📸 Nouveau visage ajouté : {filename}")
 
-    video_capture = cv2.VideoCapture(0)
-
-    while True:
-        ret, frame = video_capture.read()
-        if not ret:
-            print("Erreur lors de la capture vidéo")
-            break
-
-        small_frame = cv2.resize(frame, (0, 0), fx=0.25, fy=0.25)
-        rgb_small_frame = cv2.cvtColor(small_frame, cv2.COLOR_BGR2RGB)
-
-        if process_this_frame:
-            face_locations = face_recognition.face_locations(rgb_small_frame)
-            face_encodings = face_recognition.face_encodings(rgb_small_frame, face_locations)
-
-            face_names = []
-            for face_encoding in face_encodings:
-                matches = face_recognition.compare_faces(known_face_encodings, face_encoding)
-                name = "Unknown"
-
-                face_distances = face_recognition.face_distance(known_face_encodings, face_encoding)
-                best_match_index = np.argmin(face_distances)
-                if matches[best_match_index]:
-                    name = known_face_names[best_match_index]
-
-                face_names.append(name)
-
-                if name in students:
-                    students.remove(name)
-                    print(f"✅ Étudiant détecté : {name}")
-                    current_datetime = datetime.now()
-                    lnwriter.writerow([name, current_datetime.strftime("%Y-%m-%d"), current_datetime.strftime("%H:%M:%S")])
-
-        process_this_frame = not process_this_frame
-
-        for (top, right, bottom, left), name in zip(face_locations, face_names):
-            top *= 4
-            right *= 4
-            bottom *= 4
-            left *= 4
-
-            cv2.rectangle(frame, (left, top), (right, bottom), (0, 255, 0), 2)
-            cv2.rectangle(frame, (left, bottom - 35), (right, bottom), (0, 255, 0), cv2.FILLED)
-            cv2.putText(frame, name, (left + 6, bottom - 6), cv2.FONT_HERSHEY_DUPLEX, 1.0, (255, 255, 255), 1)
-
-        cv2.imshow("Attendance System", frame)
-
-        if cv2.waitKey(1) & 0xFF == ord('q'):
-            break
-
-    video_capture.release()
-    cv2.destroyAllWindows()
-    f.close()
-
-# === Mode API Flask ===
+#  Reconnaissance faciale
 @app.route("/recognize", methods=["POST"])
 def recognize():
     file = request.data
     nparr = np.frombuffer(file, np.uint8)
     frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
 
-    rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    face_locations = face_recognition.face_locations(rgb_frame)
+    if frame is None:
+        return jsonify({"status": "error", "message": "Image non valide"})
 
-    if not face_locations:
+    #  Réduire pour accélérer
+    small_frame = cv2.resize(frame, (0, 0), fx=FRAME_RESIZE_SCALE, fy=FRAME_RESIZE_SCALE)
+    rgb_small_frame = cv2.cvtColor(small_frame, cv2.COLOR_BGR2RGB)
+
+    face_locations = face_recognition.face_locations(rgb_small_frame, model=MODEL)
+    face_encodings = face_recognition.face_encodings(rgb_small_frame, face_locations)
+
+    print(f" {len(face_encodings)} visage(s) détecté(s)")
+
+    if not face_encodings:
         return jsonify({"status": "no_face"})
 
-    face_encodings = face_recognition.face_encodings(rgb_frame, face_locations)
     for encoding in face_encodings:
-        matches = face_recognition.compare_faces(known_face_encodings, encoding)
-        name = "Unknown"
+        distances = face_recognition.face_distance(known_face_encodings, encoding)
+        best_match_index = np.argmin(distances)
+        print(f" Distance: {distances[best_match_index]:.3f}")
 
-        if True in matches:
-            first_match_index = matches.index(True)
-            name = known_face_names[first_match_index]
+        if distances[best_match_index] < TOLERANCE:
+            name = known_face_names[best_match_index]
+            print(f" Visage reconnu : {name}")
+            log_detection(name)
             return jsonify({"status": "known", "name": name})
+        else:
+            print("Visage inconnu")
+            # Apprentissage progressif
+            # save_new_face(frame, "abir") 
+            return jsonify({"status": "unknown"})
 
-    return jsonify({"status": "unknown"})
-
-def run_server():
-    print("🚀 Serveur Flask lancé sur http://localhost:5000")
-    app.run(host="0.0.0.0", port=5000)
-
-# === Choix du mode ===
 if __name__ == "__main__":
-    if len(sys.argv) > 1 and sys.argv[1] == "server":
-        run_server()
-    else:
-        run_realtime()
+    print("🚀 Serveur Flask lancé sur http://0.0.0.0:5000")
+    load_known_faces()
+    app.run(host="0.0.0.0", port=5000, debug=False)
