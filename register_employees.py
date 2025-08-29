@@ -8,7 +8,7 @@ employees_collection = db["employees"]
 
 PHOTOS_DIR = "photos"
 
-# 📍 Mapping optionnel des emplacements (si tu connais les localisations)
+
 employee_locations = {
     "abir": "Bureau 101",
     "aicha": "Accueil",
