@@ -70,6 +70,19 @@ Explication :
   - NumPy pour les calculs de distance
   - urllib pour télécharger les images des visiteurs
   - CSV pour la journalisation
+ 
+## 🛠️ Technologies Utilisées
+
+1. Clonez le dépôt :
+```bash
+git clone https://github.com/Abirgharbi/Face_recognition.git
+cd Face_recognition
+```
+
+2. Installez les dépendances :
+```bash
+pip install -r requirements.txt
+```
 
 ## 📋 Guide
 
@@ -81,3 +94,4 @@ Explication :
 
 
   
+
